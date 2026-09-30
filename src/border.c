@@ -84,9 +84,10 @@ static struct gradient color_style_as_gradient(struct color_style* style) {
                             .color2 = style->color };
 }
 
-static struct color_style color_style_mix(struct color_style* from, struct color_style* to, float t, float* glow) {
+static struct color_style color_style_mix(struct color_style* from, struct color_style* to, float t, float* glow, uint32_t* glow_color) {
   *glow = (from->stype == COLOR_STYLE_GLOW ? 1.f - t : 0.f)
           + (to->stype == COLOR_STYLE_GLOW ? t : 0.f);
+  *glow_color = from->stype == COLOR_STYLE_GLOW ? from->color : to->color;
 
   if (t <= 0.f) return *from;
   if (t >= 1.f) return *to;
@@ -125,10 +126,21 @@ static void border_draw(struct border* border, CGRect frame, struct settings* se
   }
 
   float glow;
+  uint32_t glow_color;
   struct color_style color_style = color_style_mix(&settings->inactive_window,
                                                    &settings->active_window,
                                                    level,
-                                                   &glow                     );
+                                                   &glow,
+                                                   &glow_color               );
+
+  // A gradient draws no shadow, so while fading between a glow and a
+  // gradient the fading glow is drawn below the gradient
+  bool gradient_glow = color_style.stype == COLOR_STYLE_GRADIENT
+                       && glow > 0.f;
+  if (gradient_glow) {
+    uint32_t alpha = lroundf(((glow_color >> 24) & 0xff) * glow);
+    glow_color = (glow_color & 0x00ffffff) | (alpha << 24);
+  }
 
   CGGradientRef gradient = NULL;
   CGPoint gradient_dir[2];
@@ -175,6 +187,14 @@ static void border_draw(struct border* border, CGRect frame, struct settings* se
                                      -settings->border_width / 2.f);
     }
     else if (color_style.stype == COLOR_STYLE_GRADIENT) {
+      if (gradient_glow) {
+        CGContextSaveGState(border->context);
+        drawing_set_stroke_and_fill(border->context, glow_color, glow);
+        drawing_draw_square_with_inset(border->context,
+                                       path_rect,
+                                       -settings->border_width / 2.f);
+        CGContextRestoreGState(border->context);
+      }
       drawing_draw_square_gradient_with_inset(border->context,
                                               gradient,
                                               gradient_dir,
@@ -198,6 +218,15 @@ static void border_draw(struct border* border, CGRect frame, struct settings* se
                                            corner_radius,
                                            false           );
     } else if (color_style.stype == COLOR_STYLE_GRADIENT) {
+      if (gradient_glow) {
+        CGContextSaveGState(border->context);
+        drawing_set_stroke_and_fill(border->context, glow_color, glow);
+        drawing_draw_rounded_rect_with_inset(border->context,
+                                             path_rect,
+                                             corner_radius,
+                                             false           );
+        CGContextRestoreGState(border->context);
+      }
       drawing_draw_rounded_gradient_with_inset(border->context,
                                                gradient,
                                                gradient_dir,
