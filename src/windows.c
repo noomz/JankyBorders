@@ -2,6 +2,7 @@
 #include "hashtable.h"
 #include "border.h"
 #include "misc/ax.h"
+#include "misc/radius.h"
 #include <string.h>
 #include <libproc.h>
 
@@ -61,21 +62,19 @@ bool windows_window_create(struct table* windows, uint32_t wid, uint64_t sid) {
             window_created = true;
           }
 
-          int32_t radius = 0;
-
-          // Determine window corner radius
+          bool got_radius = false;
+          float radius = 0.f;
           if (JBSLSWindowIteratorGetCornerRadii) {
             CFArrayRef radii_ref = JBSLSWindowIteratorGetCornerRadii(iterator);
             if (radii_ref && CFArrayGetCount(radii_ref) > 0) {
-              CFNumberRef value = CFArrayGetValueAtIndex(radii_ref, 0);
-              CFNumberGetValue(value, kCFNumberSInt32Type, &radius);
+              got_radius = border_cfnumber_as_radius(
+                  CFArrayGetValueAtIndex(radii_ref, 0), &radius);
             }
             if (radii_ref) CFRelease(radii_ref);
           }
-          radius = radius > 0 ? radius : 9;
-
+          radius = border_radius_from_api(got_radius, radius);
           border->radius = radius;
-          border->inner_radius = radius + 1;
+          border->inner_radius = border_inner_radius(radius);
           border->target_wid = wid;
           border->sid = sid;
           border_update(border, false);
