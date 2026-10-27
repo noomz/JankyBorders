@@ -11,6 +11,10 @@ asan: | bin
 	clang -std=c99 -Wall -g -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer -g $(FILES) -o bin/debug $(LIBS)
 	./bin/debug
 
+test: | bin
+	clang -std=c99 -O0 -g tests/test_corner_radius.c -o bin/test_corner_radius -framework CoreFoundation
+	./bin/test_corner_radius
+
 bin:
 	mkdir bin
 
