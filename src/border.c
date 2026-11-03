@@ -378,10 +378,11 @@ void border_init(struct border* border, int cid) {
 }
 
 struct border* border_create() {
+  // All borders share the main connection: transaction ids are numbered per
+  // process, but WindowServer tracks them per connection and logs every id
+  // missing from a connection as "transaction N timed out".
   struct border* border = malloc(sizeof(struct border));
-  int cid = 0;
-  SLSNewConnection(0, &cid);
-  border_init(border, cid);
+  border_init(border, 0);
   return border;
 }
 
@@ -453,8 +454,6 @@ void border_destroy(struct border* border) {
     border_destroy_window(border);
     if (border->proxy) border_destroy(border->proxy);
     animation_stop(&border->animation);
-    if (!border->is_proxy && border->cid != SLSMainConnectionID())
-      SLSReleaseConnection(border->cid);
     pthread_mutex_unlock(&border->mutex);
     free(border);
   });
