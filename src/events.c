@@ -35,6 +35,81 @@ static bool is_own_window(int cid, uint32_t wid) {
   return pid == g_pid;
 }
 
+// Creating a border allocates a window and draws it, which takes tens of
+// milliseconds for a large window. On a workspace switch WindowServer sends the
+// creates for the incoming windows a few milliseconds before the destroys for
+// the outgoing ones. Creating borders inline blocked those destroys, and the
+// outgoing borders stayed on screen without their windows. Creates therefore
+// wait CREATE_BATCH_DELAY so the destroys of the same switch run first, and
+// then run one per main queue turn so a later destroy is never stuck behind
+// the whole batch.
+#define CREATE_BATCH_DELAY (50 * NSEC_PER_MSEC)
+
+struct pending_create {
+  uint32_t wid;
+  uint64_t sid;
+};
+
+static struct pending_create* g_pending_creates = NULL;
+static int g_pending_create_count = 0;
+static bool g_pending_create_scheduled = false;
+
+static void pending_create_remove(uint32_t wid) {
+  for (int i = 0; i < g_pending_create_count; i++) {
+    if (g_pending_creates[i].wid != wid) continue;
+    memmove(&g_pending_creates[i],
+            &g_pending_creates[i + 1],
+            sizeof(struct pending_create) * (g_pending_create_count - i - 1));
+    g_pending_create_count--;
+    return;
+  }
+}
+
+static bool g_focus_scheduled = false;
+
+static void schedule_focus_update(void) {
+  if (g_focus_scheduled) return;
+  g_focus_scheduled = true;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    g_focus_scheduled = false;
+    windows_determine_and_focus_active_window(&g_windows);
+  });
+}
+
+static void pending_create_process_next(void) {
+  if (g_pending_create_count == 0) {
+    g_pending_create_scheduled = false;
+    schedule_focus_update();
+    return;
+  }
+
+  struct pending_create next = g_pending_creates[0];
+  pending_create_remove(next.wid);
+  if (windows_window_create(&g_windows, next.wid, next.sid)) {
+    debug("Window Created: %d %d\n", next.wid, next.sid);
+  }
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    pending_create_process_next();
+  });
+}
+
+static void pending_create_add(uint32_t wid, uint64_t sid) {
+  pending_create_remove(wid);
+  g_pending_creates = realloc(g_pending_creates,
+                              sizeof(struct pending_create)
+                              * (g_pending_create_count + 1));
+  g_pending_creates[g_pending_create_count++]
+    = (struct pending_create){ .wid = wid, .sid = sid };
+
+  if (g_pending_create_scheduled) return;
+  g_pending_create_scheduled = true;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, CREATE_BATCH_DELAY),
+                 dispatch_get_main_queue(), ^{
+    pending_create_process_next();
+  });
+}
+
 static void window_spawn_handler(uint32_t event, struct window_spawn_data* data, size_t _, int cid) {
   struct table* windows = &g_windows;
   uint32_t wid = data->wid;
@@ -43,15 +118,13 @@ static void window_spawn_handler(uint32_t event, struct window_spawn_data* data,
   if (!wid || !sid || is_own_window(cid, wid)) return;
 
   if (event == EVENT_WINDOW_CREATE) {
-    if (windows_window_create(windows, wid, sid)) {
-      debug("Window Created: %d %d\n", wid, sid);
-      windows_determine_and_focus_active_window(windows);
-    }
+    pending_create_add(wid, sid);
   } else if (event == EVENT_WINDOW_DESTROY) {
+    pending_create_remove(wid);
     if (windows_window_destroy(windows, wid, sid)) {
       debug("Window Destroyed: %d %d\n", wid, sid);
     }
-    windows_determine_and_focus_active_window(windows);
+    schedule_focus_update();
   }
 }
 
