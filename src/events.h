@@ -1,4 +1,7 @@
 #pragma once
+#include <stdbool.h>
+
+extern bool g_mission_control_active;
 
 #define EVENT_WINDOW_UPDATE  723
 

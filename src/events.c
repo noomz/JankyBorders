@@ -3,9 +3,95 @@
 #include "windows.h"
 #include "border.h"
 #include "misc/window.h"
+#include <libproc.h>
 
 extern struct table g_windows;
 extern pid_t g_pid;
+
+bool g_mission_control_active;
+
+// On macOS 27, WindowManager places a level-19 backdrop on each display
+// during Mission Control instead of hiding our independent overlay windows.
+#define MISSION_CONTROL_BACKDROP_LEVEL 19
+
+static bool covers_display(CGRect bounds) {
+  CGDirectDisplayID display;
+  uint32_t count = 0;
+  return CGGetDisplaysWithRect(bounds, 1, &display, &count) == kCGErrorSuccess
+         && count && CGRectEqualToRect(bounds, CGDisplayBounds(display));
+}
+
+static bool mission_control_backdrop_is_visible(void) {
+  CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly,
+                                                 kCGNullWindowID);
+  if (!windows) return false;
+
+  bool found = false;
+  for (CFIndex i = 0; i < CFArrayGetCount(windows); ++i) {
+    CFDictionaryRef window = CFArrayGetValueAtIndex(windows, i);
+    CFNumberRef layer = CFDictionaryGetValue(window, kCGWindowLayer);
+    int level;
+    if (!layer || !CFNumberGetValue(layer, kCFNumberIntType, &level)
+        || level != MISSION_CONTROL_BACKDROP_LEVEL) continue;
+
+    CFStringRef owner = CFDictionaryGetValue(window, kCGWindowOwnerName);
+    CFDictionaryRef geometry = CFDictionaryGetValue(window, kCGWindowBounds);
+    CGRect bounds;
+    if (owner && CFEqual(owner, CFSTR("WindowManager"))
+        && geometry && CGRectMakeWithDictionaryRepresentation(geometry, &bounds)
+        && covers_display(bounds)) {
+      found = true;
+      break;
+    }
+  }
+  CFRelease(windows);
+  return found;
+}
+
+static void mission_control_watch_for_exit(void) {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+                 dispatch_get_main_queue(), ^{
+    if (mission_control_backdrop_is_visible()) {
+      mission_control_watch_for_exit();
+    } else {
+      g_mission_control_active = false;
+      windows_draw_borders_on_current_spaces(&g_windows);
+      windows_determine_and_focus_active_window(&g_windows);
+    }
+  });
+}
+
+static void mission_control_enter(void) {
+  if (g_mission_control_active) return;
+  g_mission_control_active = true;
+  for (int i = 0; i < g_windows.capacity; ++i) {
+    for (struct bucket* bucket = g_windows.buckets[i]; bucket; bucket = bucket->next) {
+      struct border* border = bucket->value;
+      if (!border) continue;
+      border_hide(border);
+      if (border->proxy) border_hide(border->proxy);
+    }
+  }
+  mission_control_watch_for_exit();
+}
+
+static void mission_control_check_window(int cid, uint32_t wid) {
+  if (g_mission_control_active
+      || window_level(cid, wid) != MISSION_CONTROL_BACKDROP_LEVEL) return;
+
+  int owner;
+  pid_t pid;
+  char name[PROC_PIDPATHINFO_MAXSIZE];
+  CGRect bounds;
+  if (SLSGetWindowOwner(cid, wid, &owner) == kCGErrorSuccess
+      && SLSConnectionGetPID(owner, &pid) == kCGErrorSuccess
+      && proc_name(pid, name, sizeof(name)) > 0
+      && strcmp(name, "WindowManager") == 0
+      && SLSGetWindowBounds(cid, wid, &bounds) == kCGErrorSuccess
+      && covers_display(bounds)) {
+    mission_control_enter();
+  }
+}
 
 #ifdef DEBUG
 static void dump_event(void* data, size_t data_length) {
@@ -118,6 +204,9 @@ static void window_spawn_handler(uint32_t event, struct window_spawn_data* data,
   if (!wid || !sid || is_own_window(cid, wid)) return;
 
   if (event == EVENT_WINDOW_CREATE) {
+    if (__builtin_available(macOS 27.0, *)) {
+      mission_control_check_window(cid, wid);
+    }
     pending_create_add(wid, sid);
   } else if (event == EVENT_WINDOW_DESTROY) {
     pending_create_remove(wid);
@@ -198,6 +287,10 @@ void events_register(int cid) {
   SLSRegisterNotifyProc(space_handler, EVENT_SPACE_CHANGE, cid_ctx);
 
   SLSRegisterNotifyProc(front_app_handler, EVENT_FRONT_CHANGE, cid_ctx);
+
+  if (__builtin_available(macOS 27.0, *)) {
+    if (mission_control_backdrop_is_visible()) mission_control_enter();
+  }
 
 #ifdef DEBUG
   for (int i = 0; i < 2000; i++) {
