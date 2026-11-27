@@ -1,4 +1,5 @@
 #include "border.h"
+#include "events.h"
 #include "hashtable.h"
 #include "misc/extern.h"
 #include "windows.h"
@@ -270,7 +271,7 @@ void border_create_window(struct border* border, CGRect frame, bool unmanaged, b
 }
 
 void border_update_internal(struct border* border, struct settings* settings) {
-  if (border->external_proxy_wid) return;
+  if (border->external_proxy_wid || g_mission_control_active) return;
 
   int cid = border->cid;
   CGRect frame;
@@ -537,6 +538,7 @@ void border_hide(struct border* border) {
 void border_unhide(struct border* border) {
   pthread_mutex_lock(&border->mutex);
   if (border->too_small
+      || g_mission_control_active
       || border->external_proxy_wid
       || (!border->sticky && !is_space_visible(border->cid, border->sid))) {
     pthread_mutex_unlock(&border->mutex);

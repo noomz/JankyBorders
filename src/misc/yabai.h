@@ -4,6 +4,7 @@
 
 #ifdef _YABAI_INTEGRATION
 #include "extern.h"
+#include "../events.h"
 #include "../windows.h"
 #include "../mach.h"
 #include <CoreVideo/CoreVideo.h>
@@ -56,6 +57,11 @@ static CVReturn track_transform(CVDisplayLinkRef display_link, const CVTimeStamp
 }
 
 static void* yabai_proxy_begin_proc(void* context) {
+  if (g_mission_control_active) {
+    free(context);
+    return NULL;
+  }
+
   struct yabai_proxy_payload* info = context;
   struct border* proxy = info->proxy;
   pthread_mutex_lock(&proxy->mutex);
@@ -122,7 +128,7 @@ static void* yabai_proxy_end_proc(void* context) {
 }
 
 static inline void yabai_proxy_begin(struct table* windows, uint32_t wid, uint32_t real_wid) {
-  if (!real_wid || !wid) return;
+  if (!real_wid || !wid || g_mission_control_active) return;
   struct border* border = table_find(windows, &real_wid);
 
   if (border) {
